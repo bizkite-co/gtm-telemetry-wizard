@@ -9,8 +9,8 @@ from rich.table import Table
 from typer import rich_utils
 from verkit.theme import DEFAULT as theme
 
-from .config import TelemetryConfig
-from .service import TelemetryProvider
+from .config import ConfigurationError, TelemetryConfig
+from .service import ProvisioningError, TelemetryProvider
 
 
 def _themed_typer_panel(*args: object, **kwargs: object) -> Panel:
@@ -24,6 +24,21 @@ app = typer.Typer(no_args_is_help=True, help="Standalone GTM Telemetry Setup & C
 console = Console()
 
 
+def _exit_with_error(error: ConfigurationError | ProvisioningError) -> None:
+    console.print("\n[bold red]Unable to continue[/bold red]")
+    console.print(f"[red]Reason:[/red] {error}")
+    console.print(f"[cyan]Solution:[/cyan] {error.solution}")
+    raise typer.Exit(code=2)
+
+
+def _load_config(config_path: Optional[Path], **overrides: object) -> TelemetryConfig:
+    try:
+        return TelemetryConfig.load(config_path=config_path, **overrides)
+    except ConfigurationError as error:
+        _exit_with_error(error)
+    raise AssertionError("unreachable")
+
+
 @app.command(name="wizard")
 def wizard_cmd(
     domain: Optional[str] = typer.Option(None, "--domain", "-d", help="Target website domain"),
@@ -33,13 +48,17 @@ def wizard_cmd(
     skip_verify: bool = typer.Option(False, "--skip-verify", help="Skip Playwright live URL verification"),
 ) -> None:
     """Guided wizard for inspecting status, compiling container spec, verifying live site, and deploying GTM."""
-    cfg = TelemetryConfig.load(
-        config_path=config,
+    cfg = _load_config(
+        config,
         domain=domain,
         container_id=container_id,
         ga4_measurement_id=ga4_id,
     )
     provider = TelemetryProvider(cfg)
+    try:
+        cfg.require("domain", "container_id", "ga4_measurement_id")
+    except ConfigurationError as error:
+        _exit_with_error(error)
 
     console.print("[bold cyan]GTM & Web Telemetry Setup Wizard[/bold cyan]")
     console.print(f"[dim]Domain: {cfg.domain} | Container: {cfg.container_id}[/dim]")
@@ -158,32 +177,66 @@ def wizard_cmd(
     console.print("[bold green]✓ Setup Wizard Complete![/bold green]")
 
 
+@app.command(name="provision")
+def provision_cmd(
+    domain: Optional[str] = typer.Option(None, "--domain", "-d", help="Domain for the new web property and container"),
+    analytics_account_id: Optional[str] = typer.Option(
+        None, "--analytics-account-id", help="Google Analytics account ID that will own the property"
+    ),
+    gtm_account_id: Optional[str] = typer.Option(
+        None, "--gtm-account-id", help="Google Tag Manager account ID that will own the container"
+    ),
+    config: Optional[Path] = typer.Option(
+        None, "--config", help="Path to the telemetry.toml file to create or update"
+    ),
+) -> None:
+    """Create GA4 and GTM resources, then persist their IDs to telemetry.toml."""
+    cfg = _load_config(
+        config,
+        domain=domain,
+        analytics_account_id=analytics_account_id,
+        gtm_account_id=gtm_account_id,
+    )
+    try:
+        config_path = TelemetryProvider(cfg).provision()
+    except (ConfigurationError, ProvisioningError) as error:
+        _exit_with_error(error)
+    console.print("[bold green]Provisioning complete[/bold green]")
+    console.print(f"  GA4 measurement ID: [cyan]{cfg.ga4_measurement_id}[/cyan]")
+    console.print(f"  GTM container ID: [cyan]{cfg.container_id}[/cyan]")
+    console.print(f"  Saved configuration: [cyan]{config_path}[/cyan]")
+
+
 @app.command(name="sync")
 def sync_cmd(
-    domain: str = typer.Option("getretirementtaxanalyzer.com", "--domain", "-d", help="Target website domain"),
+    domain: Optional[str] = typer.Option(None, "--domain", "-d", help="Target website domain"),
     measurement_id: Optional[str] = typer.Option(None, "--measurement-id", "-m", help="Explicit GA4 Measurement ID override"),
+    config: Optional[Path] = typer.Option(None, "--config", help="Path to telemetry.toml config file"),
 ) -> None:
     """Compile GTM IaC container spec for the target domain."""
-    provider = TelemetryProvider(TelemetryConfig.load(domain=domain, ga4_measurement_id=measurement_id))
-    m_id = measurement_id or provider.resolve_measurement_id()
-    compiled_path = provider.compile_container_manifest(m_id)
+    provider = TelemetryProvider(_load_config(config, domain=domain, ga4_measurement_id=measurement_id))
+    try:
+        compiled_path = provider.compile_container_manifest(measurement_id)
+        m_id = measurement_id or provider.resolve_measurement_id()
+    except ConfigurationError as error:
+        _exit_with_error(error)
     console.print(f"[bold green]Resolved GA4 Measurement ID:[/bold green] [cyan]{m_id}[/cyan]")
     console.print(f"[bold green]Compiled GTM IaC Manifest:[/bold green] [dim]{compiled_path}[/dim]")
 
 
 @app.command(name="verify")
 def verify_cmd(
-    url: str = typer.Option(
-        "https://getretirementtaxanalyzer.com/?utm_source=email_sequence&utm_medium=email",
-        "--url",
-        "-u",
-        help="Target webpage URL to test",
-    ),
+    url: Optional[str] = typer.Option(None, "--url", "-u", help="Target webpage URL to test"),
+    config: Optional[Path] = typer.Option(None, "--config", help="Path to telemetry.toml config file"),
 ) -> None:
     """Run Playwright E2E verification test against live URL."""
-    provider = TelemetryProvider()
-    console.print(f"[bold blue]Running Playwright Telemetry Verification for:[/bold blue] {url}")
-    res = provider.verify_live_telemetry(url)
+    provider = TelemetryProvider(_load_config(config))
+    try:
+        res = provider.verify_live_telemetry(url)
+    except ConfigurationError as error:
+        _exit_with_error(error)
+    target_url = res["target_url"]
+    console.print(f"[bold blue]Running Playwright Telemetry Verification for:[/bold blue] {target_url}")
     console.print(f"GTM Script Loaded: {'[green]Yes[/green]' if res['gtm_script_loaded'] else '[red]No[/red]'}")
     console.print(f"Captured dataLayer Events ({len(res['data_layer_events'])}):")
     console.print_json(data=res["data_layer_events"])
@@ -191,12 +244,16 @@ def verify_cmd(
 
 @app.command(name="ping")
 def ping_cmd(
-    measurement_id: str = typer.Option("G-HJJ9TK2TKY", "--measurement-id", "-m", help="Target GA4 Measurement ID"),
-    domain: str = typer.Option("getretirementtaxanalyzer.com", "--domain", "-d", help="Target website domain"),
+    measurement_id: Optional[str] = typer.Option(None, "--measurement-id", "-m", help="Target GA4 Measurement ID"),
+    domain: Optional[str] = typer.Option(None, "--domain", "-d", help="Target website domain"),
+    config: Optional[Path] = typer.Option(None, "--config", help="Path to telemetry.toml config file"),
 ) -> None:
     """Send an initial telemetry hit to GA4 to warm up data ingestion and clear 48-hour missing traffic alerts."""
-    provider = TelemetryProvider()
-    res = provider.ping_ga4_measurement_id(measurement_id=measurement_id, domain=domain)
+    provider = TelemetryProvider(_load_config(config, domain=domain, ga4_measurement_id=measurement_id))
+    try:
+        res = provider.ping_ga4_measurement_id(measurement_id=measurement_id, domain=domain)
+    except ConfigurationError as error:
+        _exit_with_error(error)
     if res.get("success"):
         console.print(f"[bold green]✓ Sent GA4 Telemetry Ingestion Ping:[/bold green] HTTP {res.get('status')}")
     else:

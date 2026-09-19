@@ -40,6 +40,35 @@ and `mise run release` to create and push the next patch release with `verkit`.
 
 ---
 
+## Campaign Configuration and Provisioning
+
+Every campaign command requires an explicit domain, GTM container ID, and GA4
+measurement ID. `gtw` never substitutes IDs from another campaign. Store those
+values in the consuming repository's `telemetry.toml` and pass its location
+with `--config`:
+
+```bash
+gtw wizard --config path/to/telemetry.toml
+```
+
+To create a new GA4 property/web stream and GTM web container, provide the
+parent account IDs and the configuration path. This writes the returned
+`G-...` and `GTM-...` IDs to that file atomically, ready to review and commit:
+
+```bash
+gtw provision \
+  --domain example.com \
+  --analytics-account-id ANALYTICS_ACCOUNT_ID \
+  --gtm-account-id GTM_ACCOUNT_ID \
+  --config path/to/telemetry.toml
+```
+
+Provisioning uses Application Default Credentials. Before running it, enable
+the Google Analytics Admin API and Google Tag Manager API, then authenticate
+with `analytics.edit` and `tagmanager.edit.containers` scopes.
+
+---
+
 ## Quick Start
 
 ### 1. Guided Setup Wizard
@@ -55,8 +84,8 @@ Create a `telemetry.toml` in your project directory:
 ```toml
 [site]
 domain = "example.com"
-container_id = "GTM-53F6J2WX"
-ga4_measurement_id = "G-HJJ9TK2TKY"
+container_id = "GTM-XXXXXXX"
+ga4_measurement_id = "G-YYYYYYYY"
 
 [deployment]
 mode = "browser"
