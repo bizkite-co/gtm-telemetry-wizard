@@ -19,7 +19,7 @@
 ## Installation
 
 ```bash
-pip install gtm-telemetry-wizard
+uv tool install gtm-telemetry-wizard
 ```
 
 Or install from source:
@@ -27,8 +27,16 @@ Or install from source:
 ```bash
 git clone https://github.com/bizkite-co/gtm-telemetry-wizard.git
 cd gtm-telemetry-wizard
-pip install -e .
+uv sync --group dev
 ```
+
+`uv sync` installs this checkout as an editable development package. The
+repository's `mise.toml` adds `.venv/bin` to `PATH` only while working in this
+directory, so `telemetry-wizard` uses the local checkout here and the PyPI
+installation everywhere else.
+
+Use `mise run check` to verify the CLI, `mise run build` to build distributions,
+and `mise run release` to create and push the next patch release with `verkit`.
 
 ---
 

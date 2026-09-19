@@ -1,0 +1,18 @@
+[env]
+_.path = [".venv/bin"]
+
+[tasks.sync]
+run = "uv sync --group dev"
+description = "Install the editable development environment"
+
+[tasks.check]
+run = "uv run --group dev telemetry-wizard --help"
+description = "Verify the local CLI"
+
+[tasks.build]
+run = "uv build"
+description = "Build source and wheel distributions"
+
+[tasks.release]
+run = "uv run --group dev verkit release patch"
+description = "Create and push the next patch release"

@@ -18,13 +18,17 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip build twine
-          pip install -e .
+        run: uv sync --group dev --locked
+
+      - name: Check CLI
+        run: uv run --group dev telemetry-wizard --help
 
       - name: Build package
-        run: python -m build
+        run: uv build
 
       - name: Check package artifact
-        run: twine check dist/*
+        run: uvx twine check dist/*
