@@ -184,7 +184,7 @@ wheels = [
 
 [[package]]
 name = "gtm-telemetry-wizard"
-version = "0.1.1"
+version = "0.1.2"
 source = { editable = "." }
 dependencies = [
     { name = "playwright", version = "1.60.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
@@ -192,10 +192,6 @@ dependencies = [
     { name = "rich" },
     { name = "typer", version = "0.23.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
     { name = "typer", version = "0.27.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
-]
-
-[package.dev-dependencies]
-dev = [
     { name = "verkit" },
 ]
 
@@ -204,10 +200,8 @@ requires-dist = [
     { name = "playwright", specifier = ">=1.40.0" },
     { name = "rich", specifier = ">=13.0.0" },
     { name = "typer", specifier = ">=0.9.0" },
+    { name = "verkit", specifier = ">=0.2.1" },
 ]
-
-[package.metadata.requires-dev]
-dev = [{ name = "verkit", specifier = ">=0.2.1" }]
 
 [[package]]
 name = "markdown-it-py"

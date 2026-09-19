@@ -27,13 +27,13 @@ Or install from source:
 ```bash
 git clone https://github.com/bizkite-co/gtm-telemetry-wizard.git
 cd gtm-telemetry-wizard
-uv sync --group dev
+uv sync
 ```
 
 `uv sync` installs this checkout as an editable development package. The
 repository's `mise.toml` adds `.venv/bin` to `PATH` only while working in this
-directory, so `telemetry-wizard` uses the local checkout here and the PyPI
-installation everywhere else.
+directory, so `gtw` uses the local checkout here and the PyPI installation
+everywhere else.
 
 Use `mise run check` to verify the CLI, `mise run build` to build distributions,
 and `mise run release` to create and push the next patch release with `verkit`.
@@ -46,7 +46,7 @@ and `mise run release` to create and push the next patch release with `verkit`.
 Run the 5-phase setup wizard for any website and container ID:
 
 ```bash
-telemetry-wizard wizard --domain example.com --container-id GTM-XXXXXXX --ga4-id G-YYYYYYYY
+gtw wizard --domain example.com --container-id GTM-XXXXXXX --ga4-id G-YYYYYYYY
 ```
 
 ### 2. Using `telemetry.toml` Configuration File
@@ -66,7 +66,7 @@ headful = true
 Then run:
 
 ```bash
-telemetry-wizard wizard --config telemetry.toml
+gtw wizard --config telemetry.toml
 ```
 
 ---
@@ -93,10 +93,10 @@ print("Ping Status:", ping_res["status"])
 
 ## CLI Reference
 
-- `telemetry-wizard wizard` - Guided 5-phase telemetry setup wizard.
-- `telemetry-wizard sync` - Compile GTM container IaC spec.
-- `telemetry-wizard verify` - Run Playwright E2E live URL verification.
-- `telemetry-wizard ping` - Deliver initial GA4 warm-up measurement hit.
+- `gtw wizard` - Guided 5-phase telemetry setup wizard.
+- `gtw sync` - Compile GTM container IaC spec.
+- `gtw verify` - Run Playwright E2E live URL verification.
+- `gtw ping` - Deliver initial GA4 warm-up measurement hit.
 
 ---
 

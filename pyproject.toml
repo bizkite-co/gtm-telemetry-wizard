@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gtm-telemetry-wizard"
-version = "0.1.1"
+version = "0.1.2"
 description = "Standalone GTM container IaC compiler, Playwright live verifier, GA4 telemetry ingest warmer, and guided setup wizard."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -12,15 +12,11 @@ dependencies = [
     "typer>=0.9.0",
     "rich>=13.0.0",
     "playwright>=1.40.0",
-]
-
-[dependency-groups]
-dev = [
     "verkit>=0.2.1",
 ]
 
 [project.scripts]
-telemetry-wizard = "gtm_telemetry_wizard.cli:app"
+gtw = "gtm_telemetry_wizard.cli:app"
 
 [project.entry-points."cocli.plugins"]
 telemetry = "gtm_telemetry_wizard.cli:app"

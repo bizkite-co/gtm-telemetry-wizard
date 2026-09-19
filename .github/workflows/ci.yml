@@ -22,10 +22,10 @@ jobs:
         uses: astral-sh/setup-uv@v7
 
       - name: Install dependencies
-        run: uv sync --group dev --locked
+        run: uv sync --locked
 
       - name: Check CLI
-        run: uv run --group dev telemetry-wizard --help
+        run: uv run gtw --help
 
       - name: Build package
         run: uv build
