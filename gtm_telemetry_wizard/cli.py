@@ -168,7 +168,7 @@ def wizard_cmd(
         console.print("  Live Telemetry: [green]Active & Verified[/green]")
     else:
         console.print("[bold yellow]Remaining actions to reach Container Quality: Excellent:[/bold yellow]")
-        console.print("  1. Run automated container import: `gtw deploy --mode browser`")
+        console.print("  1. Deploy the compiled container: `gtw deploy --config path/to/telemetry.toml`")
         console.print(
             f"  2. In Tag Manager UI, verify Google Tag is linked to ID `{resolved_id}`."
         )
@@ -205,6 +205,28 @@ def provision_cmd(
     console.print(f"  GA4 measurement ID: [cyan]{cfg.ga4_measurement_id}[/cyan]")
     console.print(f"  GTM container ID: [cyan]{cfg.container_id}[/cyan]")
     console.print(f"  Saved configuration: [cyan]{config_path}[/cyan]")
+
+
+@app.command(name="deploy")
+def deploy_cmd(
+    config: Optional[Path] = typer.Option(None, "--config", help="Path to telemetry.toml config file"),
+    no_publish: bool = typer.Option(
+        False, "--no-publish", help="Create a GTM container version without publishing it"
+    ),
+) -> None:
+    """Import the compiled manifest into GTM through the Tag Manager API."""
+    provider = TelemetryProvider(_load_config(config))
+    try:
+        result = provider.deploy_container(publish=not no_publish)
+    except (ConfigurationError, ProvisioningError) as error:
+        _exit_with_error(error)
+    console.print("[bold green]GTM deployment complete[/bold green]")
+    console.print(f"  Workspace ID: [cyan]{result['workspace_id']}[/cyan]")
+    console.print(f"  Container version ID: [cyan]{result['version_id']}[/cyan]")
+    if result["published"] == "true":
+        console.print("  Status: [green]published[/green]")
+    else:
+        console.print("  Status: [yellow]created but not published[/yellow]")
 
 
 @app.command(name="sync")

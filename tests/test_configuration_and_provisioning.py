@@ -64,7 +64,7 @@ class ProvisioningTests(unittest.TestCase):
                     "name": "properties/123/dataStreams/456",
                     "webStreamData": {"measurementId": "G-NEW123"},
                 },
-                {"publicId": "GTM-NEW456"},
+                {"publicId": "GTM-NEW456", "containerId": "789"},
             ]
 
             with patch.object(TelemetryProvider, "_access_token", return_value="token"), patch.object(
@@ -76,6 +76,7 @@ class ProvisioningTests(unittest.TestCase):
             self.assertEqual(written.domain, "image-annex.store")
             self.assertEqual(written.ga4_measurement_id, "G-NEW123")
             self.assertEqual(written.container_id, "GTM-NEW456")
+            self.assertEqual(written.gtm_container_api_id, "789")
 
     def test_manifest_uses_configured_ids(self) -> None:
         config = TelemetryConfig(
@@ -93,3 +94,53 @@ class ProvisioningTests(unittest.TestCase):
             self.assertIn("GTM-NEW456", content)
             self.assertIn("G-NEW123", content)
             self.assertNotIn("getretirementtaxanalyzer.com", content)
+
+
+class DeploymentTests(unittest.TestCase):
+    def test_deploy_imports_manifest_and_publishes_version(self) -> None:
+        config = TelemetryConfig(
+            domain="image-annex.store",
+            container_id="GTM-NEW456",
+            gtm_container_api_id="789",
+            ga4_measurement_id="G-NEW123",
+            gtm_account_id="456",
+        )
+        responses = [
+            {"workspaceId": "111"},
+            {"triggerId": "222"},
+            {},
+            {},
+            {},
+            {},
+            {},
+            {},
+            {},
+            {},
+            {"containerVersion": {"containerVersionId": "333"}},
+            {},
+        ]
+        with patch.object(TelemetryProvider, "_access_token", return_value="token"), patch.object(
+            GoogleApiClient, "post", side_effect=responses
+        ) as post:
+            result = TelemetryProvider(config).deploy_container()
+
+        self.assertEqual(result, {"workspace_id": "111", "version_id": "333", "published": "true"})
+        calls = [call.args[0] for call in post.call_args_list]
+        self.assertTrue(any(url.endswith("/workspaces") for url in calls))
+        self.assertTrue(any(url.endswith("/triggers") for url in calls))
+        self.assertTrue(any(url.endswith("/variables") for url in calls))
+        self.assertTrue(any(url.endswith("/built_in_variables") for url in calls))
+        self.assertTrue(any(url.endswith("/tags") for url in calls))
+        self.assertTrue(any(url.endswith(":create_version") for url in calls))
+        self.assertTrue(any(url.endswith("/versions/333:publish") for url in calls))
+
+    def test_deploy_requires_gtm_api_container_id(self) -> None:
+        config = TelemetryConfig(
+            domain="image-annex.store",
+            container_id="GTM-NEW456",
+            ga4_measurement_id="G-NEW123",
+            gtm_account_id="456",
+        )
+
+        with self.assertRaisesRegex(ConfigurationError, "GTM API container ID"):
+            TelemetryProvider(config).deploy_container()

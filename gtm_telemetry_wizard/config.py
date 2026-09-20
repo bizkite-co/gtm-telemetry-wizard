@@ -21,12 +21,18 @@ class ConfigurationError(ValueError):
         labels = {
             "domain": "campaign domain",
             "container_id": "GTM container ID",
+            "gtm_container_api_id": "GTM API container ID",
             "ga4_measurement_id": "GA4 measurement ID",
             "analytics_account_id": "Google Analytics account ID",
             "gtm_account_id": "Google Tag Manager account ID",
         }
         fields = ", ".join(labels[field] for field in self.missing)
-        if {"container_id", "ga4_measurement_id"} & set(self.missing):
+        if "gtm_container_api_id" in self.missing:
+            solution = (
+                "Add the numeric Tag Manager container ID as `gtm_container_api_id` "
+                "in telemetry.toml, or run `gtw provision` for a new campaign."
+            )
+        elif {"container_id", "ga4_measurement_id"} & set(self.missing):
             solution = (
                 "Run `gtw provision --domain YOUR_DOMAIN --analytics-account-id "
                 "ANALYTICS_ACCOUNT_ID --gtm-account-id GTM_ACCOUNT_ID`, or add the "
@@ -50,6 +56,7 @@ class ConfigurationError(ValueError):
 class TelemetryConfig:
     domain: Optional[str] = None
     container_id: Optional[str] = None
+    gtm_container_api_id: Optional[str] = None
     ga4_measurement_id: Optional[str] = None
     analytics_account_id: Optional[str] = None
     gtm_account_id: Optional[str] = None
@@ -75,6 +82,7 @@ class TelemetryConfig:
             deployment_data = data.get("deployment", {})
             cfg.domain = site_data.get("domain")
             cfg.container_id = site_data.get("container_id")
+            cfg.gtm_container_api_id = site_data.get("gtm_container_api_id")
             cfg.ga4_measurement_id = site_data.get("ga4_measurement_id")
             cfg.analytics_account_id = site_data.get("analytics_account_id")
             cfg.gtm_account_id = site_data.get("gtm_account_id")
@@ -85,6 +93,7 @@ class TelemetryConfig:
         for env_name, field_name in (
             ("TELEMETRY_DOMAIN", "domain"),
             ("GTM_CONTAINER_ID", "container_id"),
+            ("GTM_API_CONTAINER_ID", "gtm_container_api_id"),
             ("GA4_MEASUREMENT_ID", "ga4_measurement_id"),
             ("GA4_ACCOUNT_ID", "analytics_account_id"),
             ("GTM_ACCOUNT_ID", "gtm_account_id"),
@@ -110,6 +119,7 @@ class TelemetryConfig:
         site_values = {
             "domain": self.domain,
             "container_id": self.container_id,
+            "gtm_container_api_id": self.gtm_container_api_id,
             "ga4_measurement_id": self.ga4_measurement_id,
             "analytics_account_id": self.analytics_account_id,
             "gtm_account_id": self.gtm_account_id,

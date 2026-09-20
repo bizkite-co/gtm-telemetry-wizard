@@ -5,6 +5,7 @@ import logging
 import subprocess
 import urllib.error
 import urllib.request
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Optional
 
@@ -369,15 +370,118 @@ class TelemetryProvider:
             {"name": domain, "usageContext": ["web"]},
         )
         container_id = container_data.get("publicId")
-        if not container_id:
+        container_api_id = container_data.get("containerId")
+        if not container_id or not container_api_id:
             raise ProvisioningError(
-                "Google Tag Manager did not return a container public ID.",
+                "Google Tag Manager did not return both a public and API container ID.",
                 "Review the Tag Manager API response; the Analytics property and data stream were created.",
             )
 
         self.config.ga4_measurement_id = measurement_id
         self.config.container_id = container_id
+        self.config.gtm_container_api_id = str(container_api_id)
         return self.config.write()
+
+    @staticmethod
+    def _resource_payload(resource: dict[str, Any], identity_fields: set[str]) -> dict[str, Any]:
+        return {
+            key: deepcopy(value)
+            for key, value in resource.items()
+            if key not in identity_fields
+        }
+
+    def deploy_container(self, publish: bool = True) -> dict[str, str]:
+        self.config.require(
+            "domain",
+            "container_id",
+            "ga4_measurement_id",
+            "gtm_account_id",
+            "gtm_container_api_id",
+        )
+        manifest_path = self.compile_container_manifest()
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        container_version = manifest["containerVersion"]
+        account_path = self._account_path(self.config.gtm_account_id or "")
+        container_path = f"{account_path}/containers/{self.config.gtm_container_api_id}"
+        client = GoogleApiClient(self._access_token())
+
+        workspace = client.post(
+            f"https://tagmanager.googleapis.com/tagmanager/v2/{container_path}/workspaces",
+            {"name": f"gtw deploy {self.config.domain}"},
+        )
+        workspace_id = workspace.get("workspaceId")
+        if not workspace_id:
+            raise ProvisioningError(
+                "Google Tag Manager did not return a workspace ID.",
+                "Review the Tag Manager API response and retry deployment.",
+            )
+        workspace_path = f"{container_path}/workspaces/{workspace_id}"
+        trigger_ids: dict[str, str] = {}
+        for trigger in container_version.get("trigger", []):
+            original_id = str(trigger.get("triggerId", ""))
+            created = client.post(
+                f"https://tagmanager.googleapis.com/tagmanager/v2/{workspace_path}/triggers",
+                self._resource_payload(
+                    trigger,
+                    {"accountId", "containerId", "workspaceId", "triggerId", "path", "fingerprint"},
+                ),
+            )
+            if original_id and created.get("triggerId"):
+                trigger_ids[original_id] = str(created["triggerId"])
+
+        for variable in container_version.get("variable", []):
+            client.post(
+                f"https://tagmanager.googleapis.com/tagmanager/v2/{workspace_path}/variables",
+                self._resource_payload(
+                    variable,
+                    {"accountId", "containerId", "workspaceId", "variableId", "path", "fingerprint"},
+                ),
+            )
+
+        for variable in container_version.get("builtInVariable", []):
+            client.post(
+                f"https://tagmanager.googleapis.com/tagmanager/v2/{workspace_path}/built_in_variables",
+                self._resource_payload(
+                    variable,
+                    {"accountId", "containerId", "workspaceId", "path", "fingerprint"},
+                ),
+            )
+
+        for tag in container_version.get("tag", []):
+            payload = self._resource_payload(
+                tag,
+                {"accountId", "containerId", "workspaceId", "tagId", "path", "fingerprint"},
+            )
+            payload["firingTriggerId"] = [
+                trigger_ids.get(str(trigger_id), str(trigger_id))
+                for trigger_id in payload.get("firingTriggerId", [])
+            ]
+            client.post(
+                f"https://tagmanager.googleapis.com/tagmanager/v2/{workspace_path}/tags",
+                payload,
+            )
+
+        version_response = client.post(
+            f"https://tagmanager.googleapis.com/tagmanager/v2/{workspace_path}:create_version",
+            {"name": f"gtw deploy {self.config.domain}"},
+        )
+        version = version_response.get("containerVersion", version_response)
+        version_id = version.get("containerVersionId")
+        if not version_id:
+            raise ProvisioningError(
+                "Google Tag Manager did not return a container version ID.",
+                "The workspace was populated but was not published; review it in Tag Manager.",
+            )
+        result = {"workspace_id": str(workspace_id), "version_id": str(version_id)}
+        if publish:
+            client.post(
+                f"https://tagmanager.googleapis.com/tagmanager/v2/{container_path}/versions/{version_id}:publish",
+                {},
+            )
+            result["published"] = "true"
+        else:
+            result["published"] = "false"
+        return result
 
     def compile_container_manifest(
         self, measurement_id: Optional[str] = None, output_dir: Optional[Path] = None

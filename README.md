@@ -67,6 +67,15 @@ Provisioning uses Application Default Credentials. Before running it, enable
 the Google Analytics Admin API and Google Tag Manager API, then authenticate
 with `analytics.edit` and `tagmanager.edit.containers` scopes.
 
+Deploy a generated container through the Tag Manager API:
+
+```bash
+gtw deploy --config path/to/telemetry.toml
+```
+
+Use `--no-publish` to create a reviewable GTM container version without
+publishing it.
+
 ---
 
 ## Quick Start
@@ -85,6 +94,7 @@ Create a `telemetry.toml` in your project directory:
 [site]
 domain = "example.com"
 container_id = "GTM-XXXXXXX"
+gtm_container_api_id = "123456789"
 ga4_measurement_id = "G-YYYYYYYY"
 
 [deployment]
