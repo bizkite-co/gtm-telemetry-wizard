@@ -136,6 +136,9 @@ print("Ping Status:", ping_res["status"])
 - `gtw sync` - Compile GTM container IaC spec.
 - `gtw verify` - Run Playwright E2E live URL verification.
 - `gtw ping` - Deliver initial GA4 warm-up measurement hit.
+- `gtw provision` - Provision GA4 web stream and GTM container via Google APIs.
+- `gtw deploy` - Import and publish compiled container manifest via GTM API.
+- `gtw query` - Query real-time and historical traffic via GA4 Data API.
 
 ---
 

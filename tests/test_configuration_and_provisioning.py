@@ -119,10 +119,11 @@ class DeploymentTests(unittest.TestCase):
             {"containerVersion": {"containerVersionId": "333"}},
             {},
         ]
-        with patch.object(TelemetryProvider, "_access_token", return_value="token"), patch.object(
-            GoogleApiClient, "post", side_effect=responses
-        ) as post:
-            result = TelemetryProvider(config).deploy_container()
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(TelemetryProvider, "_access_token", return_value="token"), patch.object(
+                GoogleApiClient, "post", side_effect=responses
+            ) as post:
+                result = TelemetryProvider(config).deploy_container(output_dir=Path(directory))
 
         self.assertEqual(result, {"workspace_id": "111", "version_id": "333", "published": "true"})
         calls = [call.args[0] for call in post.call_args_list]
@@ -144,3 +145,63 @@ class DeploymentTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ConfigurationError, "GTM API container ID"):
             TelemetryProvider(config).deploy_container()
+
+
+class QueryAnalyticsTests(unittest.TestCase):
+    def test_query_requires_property_id_when_not_discoverable(self) -> None:
+        config = TelemetryConfig(domain="example.com")
+        with self.assertRaisesRegex(ConfigurationError, "property ID"):
+            TelemetryProvider(config).query_analytics()
+
+    def test_query_analytics_run_report(self) -> None:
+        config = TelemetryConfig(domain="example.com", ga4_property_id="123456")
+        expected_response = {
+            "dimensionHeaders": [{"name": "pagePath"}, {"name": "sessionCampaignName"}],
+            "metricHeaders": [{"name": "activeUsers"}],
+            "rows": [
+                {
+                    "dimensionValues": [{"value": "/testimonials/"}, {"value": "testimonials"}],
+                    "metricValues": [{"value": "5"}],
+                }
+            ],
+        }
+        with patch.object(TelemetryProvider, "_access_token", return_value="token"), patch.object(
+            GoogleApiClient, "post", return_value=expected_response
+        ) as post:
+            result = TelemetryProvider(config).query_analytics(campaign="testimonials", days=3)
+
+        self.assertEqual(result, expected_response)
+        url, payload = post.call_args.args
+        self.assertIn("/properties/123456:runReport", url)
+        self.assertEqual(payload["dateRanges"], [{"startDate": "3daysAgo", "endDate": "today"}])
+        self.assertEqual(
+            payload["dimensionFilter"],
+            {
+                "filter": {
+                    "fieldName": "sessionCampaignName",
+                    "stringFilter": {"matchType": "CONTAINS", "value": "testimonials"},
+                }
+            },
+        )
+
+    def test_query_analytics_cli_command(self) -> None:
+        runner = CliRunner()
+        mock_response = {
+            "dimensionHeaders": [{"name": "pagePath"}],
+            "metricHeaders": [{"name": "activeUsers"}],
+            "rows": [
+                {
+                    "dimensionValues": [{"value": "/testimonials/"}],
+                    "metricValues": [{"value": "3"}],
+                }
+            ],
+        }
+        with patch.object(TelemetryProvider, "_access_token", return_value="token"), patch.object(
+            GoogleApiClient, "post", return_value=mock_response
+        ):
+            result = runner.invoke(app, ["query", "--property-id", "999999", "--campaign", "testimonials"])
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("Google Analytics 4 Data Report", result.output)
+        self.assertIn("/testimonials/", result.output)
+

@@ -282,5 +282,62 @@ def ping_cmd(
         console.print(f"[bold red]✗ Ping Error:[/bold red] {res.get('error')}")
 
 
+@app.command(name="query")
+def query_cmd(
+    campaign: Optional[str] = typer.Option(None, "--campaign", "-c", help="Filter by session campaign name (e.g. testimonials)"),
+    path: Optional[str] = typer.Option(None, "--path", "-p", help="Filter by page path (e.g. /testimonials/)"),
+    property_id: Optional[str] = typer.Option(None, "--property-id", help="Target GA4 Numeric Property ID"),
+    days: int = typer.Option(7, "--days", "-d", help="Number of past days to query"),
+    realtime: bool = typer.Option(False, "--realtime", "-r", help="Query real-time active users"),
+    config: Optional[Path] = typer.Option(None, "--config", help="Path to telemetry.toml config file"),
+) -> None:
+    """Query Google Analytics 4 traffic and engagement data via GA4 Data API."""
+    cfg = _load_config(config, ga4_property_id=property_id)
+    provider = TelemetryProvider(cfg)
+    try:
+        report = provider.query_analytics(
+            property_id=property_id,
+            campaign=campaign,
+            path=path,
+            days=days,
+            realtime=realtime,
+        )
+    except (ConfigurationError, ProvisioningError) as error:
+        _exit_with_error(error)
+
+    mode_label = "Real-time Traffic" if realtime else f"Traffic Summary (Past {days} days)"
+    console.print(f"\n[bold cyan]Google Analytics 4 Data Report[/bold cyan] [dim]({mode_label})[/dim]")
+    if campaign:
+        console.print(f"Filter: [yellow]Campaign contains '{campaign}'[/yellow]")
+    if path:
+        console.print(f"Filter: [yellow]Path contains '{path}'[/yellow]")
+
+    rows = report.get("rows", [])
+    if not rows:
+        console.print("\n[yellow]No visitor traffic recorded for the specified criteria.[/yellow]")
+        return
+
+    table = Table(
+        show_header=True,
+        box=theme.table_box,
+        header_style=theme.header_style,
+        padding=theme.table_padding,
+    )
+    dim_headers = [d.get("name", "") for d in report.get("dimensionHeaders", [])]
+    metric_headers = [m.get("name", "") for m in report.get("metricHeaders", [])]
+
+    for d in dim_headers:
+        table.add_column(d, style="cyan")
+    for m in metric_headers:
+        table.add_column(m, style="bold green", justify="right")
+
+    for row in rows:
+        d_vals = [v.get("value", "") for v in row.get("dimensionValues", [])]
+        m_vals = [v.get("value", "0") for v in row.get("metricValues", [])]
+        table.add_row(*(d_vals + m_vals))
+
+    console.print(table)
+
+
 if __name__ == "__main__":
     app()

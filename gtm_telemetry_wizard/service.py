@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
 import urllib.error
 import urllib.request
@@ -12,6 +13,11 @@ from typing import Any, Optional
 from .config import ConfigurationError, TelemetryConfig
 
 logger = logging.getLogger(__name__)
+
+
+def default_manifest_dir() -> Path:
+    base_data = Path(os.environ.get("XDG_DATA_HOME") or (Path.home() / ".local" / "share"))
+    return base_data / "gtm_telemetry_wizard"
 
 DEFAULT_CONTAINER_SPEC_JSON = """{
   "exportFormatVersion": 2,
@@ -279,6 +285,29 @@ class GoogleApiClient:
                 "Confirm the selected account IDs, enable the Analytics Admin and Tag Manager APIs, "
                 "and authenticate with analytics.edit and tagmanager.edit.containers scopes.",
             ) from error
+    def get(self, url: str) -> dict[str, Any]:
+        request = urllib.request.Request(
+            url,
+            headers={
+                "Authorization": f"Bearer {self.access_token}",
+                "Content-Type": "application/json",
+            },
+            method="GET",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                return json.load(response)
+        except urllib.error.HTTPError as error:
+            try:
+                details = json.load(error)
+                reason = details.get("error", {}).get("message", str(error))
+            except (json.JSONDecodeError, OSError):
+                reason = str(error)
+            raise ProvisioningError(
+                f"Google API request failed: {reason}",
+                "Confirm the selected account IDs, enable the Analytics Admin and Tag Manager APIs, "
+                "and authenticate with analytics.edit and tagmanager.edit.containers scopes.",
+            ) from error
         except OSError as error:
             raise ProvisioningError(
                 f"Could not reach the Google API: {error}",
@@ -302,26 +331,30 @@ class TelemetryProvider:
 
     @staticmethod
     def _access_token() -> str:
-        try:
-            result = subprocess.run(
-                ["gcloud", "auth", "application-default", "print-access-token"],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-        except FileNotFoundError as error:
-            raise ProvisioningError(
-                "gcloud is not installed.",
-                "Install the Google Cloud CLI, then run `gcloud auth application-default login`.",
-            ) from error
-        if result.returncode != 0 or not result.stdout.strip():
-            raise ProvisioningError(
-                "No Application Default Credentials are available.",
-                "Run `gcloud auth application-default login --scopes="
-                "https://www.googleapis.com/auth/analytics.edit,"
-                "https://www.googleapis.com/auth/tagmanager.edit.containers`.",
-            )
-        return result.stdout.strip()
+        for cmd in (
+            ["gcloud", "auth", "application-default", "print-access-token"],
+            ["gcloud", "auth", "print-access-token"],
+        ):
+            try:
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    return result.stdout.strip().splitlines()[0]
+            except FileNotFoundError as error:
+                raise ProvisioningError(
+                    "gcloud is not installed.",
+                    "Install the Google Cloud CLI, then run `gcloud auth application-default login`.",
+                ) from error
+        raise ProvisioningError(
+            "No Google credentials available via gcloud.",
+            "Run `gcloud auth application-default login --scopes="
+            "https://www.googleapis.com/auth/analytics.readonly,"
+            "https://www.googleapis.com/auth/tagmanager.readonly`.",
+        )
 
     def provision(self) -> Path:
         self.config.require("domain", "analytics_account_id", "gtm_account_id")
@@ -390,7 +423,9 @@ class TelemetryProvider:
             if key not in identity_fields
         }
 
-    def deploy_container(self, publish: bool = True) -> dict[str, str]:
+    def deploy_container(
+        self, publish: bool = True, output_dir: Optional[Path] = None
+    ) -> dict[str, str]:
         self.config.require(
             "domain",
             "container_id",
@@ -398,7 +433,7 @@ class TelemetryProvider:
             "gtm_account_id",
             "gtm_container_api_id",
         )
-        manifest_path = self.compile_container_manifest()
+        manifest_path = self.compile_container_manifest(output_dir=output_dir)
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         container_version = manifest["containerVersion"]
         account_path = self._account_path(self.config.gtm_account_id or "")
@@ -494,7 +529,7 @@ class TelemetryProvider:
             .replace("{{GTM_CONTAINER_ID}}", self.config.container_id or "")
         )
 
-        target_dir = output_dir or Path.home() / ".local" / "share" / "gtm_telemetry_wizard"
+        target_dir = output_dir or default_manifest_dir()
         target_dir.mkdir(parents=True, exist_ok=True)
         target_path = target_dir / "gtm-container-compiled.json"
         target_path.write_text(updated_content, encoding="utf-8")
@@ -565,7 +600,7 @@ class TelemetryProvider:
 
     def check_telemetry_status(self, domain: Optional[str] = None) -> dict[str, Any]:
         self.config.require("domain", "ga4_measurement_id", "container_id")
-        manifest_path = Path.home() / ".local" / "share" / "gtm_telemetry_wizard" / "gtm-container-compiled.json"
+        manifest_path = default_manifest_dir() / "gtm-container-compiled.json"
 
         status: dict[str, Any] = {
             "active_account": None,
@@ -594,3 +629,86 @@ class TelemetryProvider:
             logger.debug("gcloud token check note: %s", err)
 
         return status
+
+    def _discover_property_id(self) -> Optional[str]:
+        m_id = self.config.ga4_measurement_id
+        if not m_id:
+            return None
+        try:
+            client = GoogleApiClient(self._access_token())
+            summaries = client.get("https://analyticsadmin.googleapis.com/v1alpha/accountSummaries")
+            for summary in summaries.get("accountSummaries", []):
+                for prop in summary.get("propertySummaries", []):
+                    prop_name = prop.get("property")
+                    if prop_name:
+                        streams = client.get(f"https://analyticsadmin.googleapis.com/v1alpha/{prop_name}/dataStreams")
+                        for stream in streams.get("dataStreams", []):
+                            if stream.get("webStreamData", {}).get("measurementId") == m_id:
+                                return str(prop_name).removeprefix("properties/")
+        except Exception as err:
+            logger.debug("Property discovery note: %s", err)
+        return None
+
+    def query_analytics(
+        self,
+        property_id: Optional[str] = None,
+        campaign: Optional[str] = None,
+        path: Optional[str] = None,
+        days: int = 7,
+        realtime: bool = False,
+    ) -> dict[str, Any]:
+        p_id = property_id or self.config.ga4_property_id
+        if not p_id:
+            p_id = self._discover_property_id()
+        if not p_id:
+            raise ConfigurationError.from_reason(
+                "Missing GA4 numeric property ID.",
+                "Specify --property-id, set `ga4_property_id` in telemetry.toml, or export GA4_PROPERTY_ID.",
+            )
+        p_id = str(p_id).removeprefix("properties/")
+        client = GoogleApiClient(self._access_token())
+
+        if realtime:
+            endpoint = f"https://analyticsdata.googleapis.com/v1beta/properties/{p_id}:runRealtimeReport"
+            payload: dict[str, Any] = {
+                "dimensions": [{"name": "unifiedScreenName"}, {"name": "country"}],
+                "metrics": [{"name": "activeUsers"}],
+            }
+        else:
+            endpoint = f"https://analyticsdata.googleapis.com/v1beta/properties/{p_id}:runReport"
+            payload = {
+                "dateRanges": [{"startDate": f"{days}daysAgo", "endDate": "today"}],
+                "dimensions": [
+                    {"name": "pagePath"},
+                    {"name": "sessionCampaignName"},
+                    {"name": "sessionManualAdContent"},
+                    {"name": "sessionManualTerm"},
+                ],
+                "metrics": [
+                    {"name": "activeUsers"},
+                    {"name": "sessions"},
+                    {"name": "screenPageViews"},
+                ],
+            }
+            filters = []
+            if campaign:
+                filters.append({
+                    "filter": {
+                        "fieldName": "sessionCampaignName",
+                        "stringFilter": {"matchType": "CONTAINS", "value": campaign},
+                    }
+                })
+            if path:
+                filters.append({
+                    "filter": {
+                        "fieldName": "pagePath",
+                        "stringFilter": {"matchType": "CONTAINS", "value": path},
+                    }
+                })
+            if len(filters) == 1:
+                payload["dimensionFilter"] = filters[0]
+            elif len(filters) > 1:
+                payload["dimensionFilter"] = {"andGroup": {"expressions": filters}}
+
+        return client.post(endpoint, payload)
+
