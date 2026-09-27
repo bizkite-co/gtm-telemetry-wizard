@@ -330,8 +330,15 @@ class TelemetryProvider:
         return account_id if account_id.startswith("accounts/") else f"accounts/{account_id}"
 
     @staticmethod
-    def _access_token() -> str:
+    def _access_token(scopes: Optional[str] = None) -> str:
+        default_scopes = (
+            "https://www.googleapis.com/auth/analytics.readonly,"
+            "https://www.googleapis.com/auth/tagmanager.readonly,"
+            "https://www.googleapis.com/auth/cloud-platform"
+        )
+        req_scopes = scopes or default_scopes
         for cmd in (
+            ["gcloud", "auth", "application-default", "print-access-token", f"--scopes={req_scopes}"],
             ["gcloud", "auth", "application-default", "print-access-token"],
             ["gcloud", "auth", "print-access-token"],
         ):
