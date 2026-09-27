@@ -14,5 +14,5 @@ run = "uv build"
 description = "Build source and wheel distributions"
 
 [tasks.release]
-run = "uv run verkit release patch"
+run = "uv run gtw version release patch"
 description = "Create and push the next patch release"

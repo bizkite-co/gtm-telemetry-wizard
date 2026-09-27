@@ -139,6 +139,7 @@ print("Ping Status:", ping_res["status"])
 - `gtw provision` - Provision GA4 web stream and GTM container via Google APIs.
 - `gtw deploy` - Import and publish compiled container manifest via GTM API.
 - `gtw query` - Query real-time and historical traffic via GA4 Data API.
+- `gtw version` - Inspect version, promote, tag, and execute releases via verkit (`gtw version release {major,minor,patch}`).
 
 ---
 

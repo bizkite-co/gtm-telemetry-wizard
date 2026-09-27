@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from enum import Enum
 from pathlib import Path
 from typing import Optional
 import typer
@@ -7,6 +8,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 from typer import rich_utils
+from verkit import display_version_info, promote_version, release_version, tag_version
 from verkit.theme import DEFAULT as theme
 
 from .config import ConfigurationError, TelemetryConfig
@@ -337,6 +339,70 @@ def query_cmd(
         table.add_row(*(d_vals + m_vals))
 
     console.print(table)
+
+
+version_app = typer.Typer(no_args_is_help=False, help="Version inspection, promotion, and release management via verkit")
+app.add_typer(version_app, name="version")
+
+
+class ReleasePart(str, Enum):
+    major = "major"
+    minor = "minor"
+    patch = "patch"
+
+
+@version_app.callback(invoke_without_command=True)
+def version_main(ctx: typer.Context) -> None:
+    """Inspect version when called without subcommands."""
+    if ctx.invoked_subcommand is None:
+        display_version_info(console, "gtm-telemetry-wizard")
+
+
+@version_app.command(name="inspect")
+def version_inspect_cmd() -> None:
+    """Inspect working tree and HEAD version."""
+    display_version_info(console, "gtm-telemetry-wizard")
+
+
+@version_app.command(name="release")
+def version_release_cmd(
+    part: ReleasePart = typer.Argument(..., help="Version increment part: major, minor, or patch"),
+    push: bool = typer.Option(True, "--push/--no-push", help="Push commit and tag to origin"),
+) -> None:
+    """Atomic promote + tag + push release workflow via verkit."""
+    try:
+        new_v, tag_name = release_version(part.value, console=console, push=push)
+        console.print(f"[bold green]✓ Successfully released {new_v} (tag: {tag_name})[/bold green]")
+    except Exception as e:
+        console.print(f"[bold red]Release failed:[/bold red] {e}")
+        raise typer.Exit(code=1)
+
+
+@version_app.command(name="promote")
+def version_promote_cmd(
+    part: ReleasePart = typer.Argument(..., help="Version increment part: major, minor, or patch"),
+    allow_amend: bool = typer.Option(True, "--amend/--no-amend", help="Allow amending previous version bump commit"),
+) -> None:
+    """Bump version in project files and create/amend commit via verkit."""
+    try:
+        new_v = promote_version(part.value, console=console, allow_amend=allow_amend)
+        console.print(f"[bold green]✓ Promoted version to {new_v}[/bold green]")
+    except Exception as e:
+        console.print(f"[bold red]Promotion failed:[/bold red] {e}")
+        raise typer.Exit(code=1)
+
+
+@version_app.command(name="tag")
+def version_tag_cmd(
+    push: bool = typer.Option(True, "--push/--no-push", help="Push tag to origin"),
+) -> None:
+    """Create git tag on HEAD and push via verkit."""
+    try:
+        tag_name = tag_version(console=console, push=push)
+        console.print(f"[bold green]✓ Created tag {tag_name}[/bold green]")
+    except Exception as e:
+        console.print(f"[bold red]Tagging failed:[/bold red] {e}")
+        raise typer.Exit(code=1)
 
 
 if __name__ == "__main__":

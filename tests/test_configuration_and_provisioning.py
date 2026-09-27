@@ -205,3 +205,26 @@ class QueryAnalyticsTests(unittest.TestCase):
         self.assertIn("Google Analytics 4 Data Report", result.output)
         self.assertIn("/testimonials/", result.output)
 
+
+class VersionCommandTests(unittest.TestCase):
+    def test_version_inspect_subcommand(self) -> None:
+        runner = CliRunner()
+        with patch("gtm_telemetry_wizard.cli.display_version_info") as mock_disp:
+            result = runner.invoke(app, ["version", "inspect"])
+        self.assertEqual(result.exit_code, 0)
+        mock_disp.assert_called_once()
+
+    def test_version_release_subcommand(self) -> None:
+        runner = CliRunner()
+        with patch("gtm_telemetry_wizard.cli.release_version", return_value=("v0.1.3", "v0.1.3")) as mock_rel:
+            result = runner.invoke(app, ["version", "release", "patch", "--no-push"])
+        self.assertEqual(result.exit_code, 0)
+        mock_rel.assert_called_once_with("patch", console=unittest.mock.ANY, push=False)
+        self.assertIn("Successfully released v0.1.3", result.output)
+
+    def test_version_release_invalid_choice(self) -> None:
+        runner = CliRunner()
+        result = runner.invoke(app, ["version", "release", "invalid-part"])
+        self.assertNotEqual(result.exit_code, 0)
+
+
