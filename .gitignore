@@ -29,3 +29,6 @@ env/
 htmlcov/
 *.log
 telemetry.toml
+
+# git worktrees
+.gwt/
