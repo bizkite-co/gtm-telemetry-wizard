@@ -11,8 +11,15 @@ from typer import rich_utils
 from verkit import display_version_info, promote_version, release_version, tag_version
 from verkit.theme import DEFAULT as theme
 
+from .auth import (
+    ALL_SCOPES,
+    check_account_scopes,
+    ensure_account_scopes,
+    list_gcloud_accounts,
+    scopes_arg,
+)
 from .config import ConfigurationError, TelemetryConfig
-from .service import ProvisioningError, TelemetryProvider
+from .service import GoogleApiClient, ProvisioningError, TelemetryProvider, find_ga4_properties
 
 
 def _themed_typer_panel(*args: object, **kwargs: object) -> Panel:
@@ -339,6 +346,166 @@ def query_cmd(
         table.add_row(*(d_vals + m_vals))
 
     console.print(table)
+
+
+auth_app = typer.Typer(no_args_is_help=True, help="Manage gcloud OAuth scopes gtw needs, across multiple accounts.")
+app.add_typer(auth_app, name="auth")
+
+
+@auth_app.command(name="scopes")
+def auth_scopes_cmd() -> None:
+    """Print the canonical scope list gtw requires - the single source of
+    truth lives in gtm_telemetry_wizard/auth.py, not copy-pasted anywhere."""
+    console.print(scopes_arg(ALL_SCOPES))
+
+
+@auth_app.command(name="status")
+def auth_status_cmd(
+    accounts: list[str] = typer.Argument(
+        None, help="Accounts to check (default: all `gcloud auth list` accounts)"
+    ),
+) -> None:
+    """Show which required scopes each account currently has. Read-only -
+    never prompts for login."""
+    target_accounts = accounts or list_gcloud_accounts()
+    if not target_accounts:
+        console.print("[yellow]No gcloud accounts found. Run `gcloud auth login` first.[/yellow]")
+        raise typer.Exit(code=1)
+
+    table = Table(
+        show_header=True,
+        box=theme.table_box,
+        header_style=theme.header_style,
+        padding=theme.table_padding,
+    )
+    table.add_column("Account", style="cyan")
+    table.add_column("Status", style="bold")
+    table.add_column("Missing scopes", style="yellow")
+
+    for account in target_accounts:
+        status = check_account_scopes(account)
+        if status.error:
+            table.add_row(account, "[red]Error[/red]", status.error)
+        elif status.ok:
+            table.add_row(account, "[green]OK[/green]", "")
+        else:
+            table.add_row(account, "[yellow]Missing scopes[/yellow]", "\n".join(status.missing))
+
+    console.print(table)
+
+
+@auth_app.command(name="login")
+def auth_login_cmd(
+    accounts: list[str] = typer.Argument(
+        ..., help="Account(s) to (re-)grant gtw's required scopes to"
+    ),
+    force: bool = typer.Option(
+        False, "--force", help="Re-run login even if scopes already look sufficient"
+    ),
+) -> None:
+    """Idempotently ensure each account has the scopes gtw needs.
+
+    Only prompts (interactive OAuth consent in a browser) for accounts
+    actually missing a scope - safe to re-run any time, including right
+    after adding a new scope to ALL_SCOPES in gtm_telemetry_wizard/auth.py.
+    This is the one command that should ever need to change when a new
+    Google API scope requirement shows up.
+    """
+    for account in accounts:
+        console.print(f"[dim]Checking {account}...[/dim]")
+        status = ensure_account_scopes(account, force=force)
+        if status.ok:
+            console.print(f"[bold green]✓ {account}[/bold green] has all required scopes.")
+        else:
+            console.print(
+                f"[bold red]✗ {account}[/bold red] still missing: {', '.join(status.missing)}"
+            )
+
+
+accounts_app = typer.Typer(
+    no_args_is_help=True,
+    help="Discover which Google account/GA4 property owns a given measurement ID or domain.",
+)
+app.add_typer(accounts_app, name="accounts")
+
+
+@accounts_app.command(name="discover")
+def accounts_discover_cmd(
+    measurement_id: Optional[str] = typer.Option(
+        None, "--measurement-id", "-m", help="GA4 measurement ID to search for (e.g. G-XXXXXXX)"
+    ),
+    domain: Optional[str] = typer.Option(
+        None, "--domain", "-d", help="Web stream default URI (domain) to search for"
+    ),
+    accounts: list[str] = typer.Option(
+        None, "--account", help="Restrict to these gcloud accounts (default: all `gcloud auth list` accounts)"
+    ),
+) -> None:
+    """Scan every (or specified) gcloud account for GA4 properties, reporting
+    which account can see which measurement ID/domain - a CLI-native,
+    scriptable, repeatable replacement for hunting through the GA4 web UI
+    across multiple logins to figure out "which account owns this?".
+
+    Run `gtw auth login <account>` first for any account missing scopes -
+    this command will report "No access" for those rather than guessing.
+    """
+    target_accounts = accounts or list_gcloud_accounts()
+    if not target_accounts:
+        console.print("[yellow]No gcloud accounts found. Run `gcloud auth login` first.[/yellow]")
+        raise typer.Exit(code=1)
+
+    table = Table(
+        show_header=True,
+        box=theme.table_box,
+        header_style=theme.header_style,
+        padding=theme.table_padding,
+    )
+    table.add_column("Account", style="cyan")
+    table.add_column("GA4 Account", style="dim")
+    table.add_column("Property ID", style="bold green")
+    table.add_column("Measurement ID", style="bold")
+    table.add_column("Domain", style="dim")
+
+    any_found = False
+    for account in target_accounts:
+        try:
+            token = TelemetryProvider._access_token(account=account)
+        except (ConfigurationError, ProvisioningError) as error:
+            table.add_row(account, "[red]No access[/red]", "", "", str(error))
+            continue
+
+        client = GoogleApiClient(token)
+        try:
+            matches = find_ga4_properties(client, measurement_id=measurement_id)
+        except Exception as exc:
+            table.add_row(account, "[red]Error[/red]", "", "", str(exc))
+            continue
+
+        if domain:
+            matches = [
+                m for m in matches if m.web_stream_default_uri and domain in m.web_stream_default_uri
+            ]
+
+        if not matches:
+            table.add_row(account, "[dim]none visible[/dim]", "", "", "")
+            continue
+
+        for m in matches:
+            any_found = True
+            table.add_row(
+                account,
+                m.account_display_name,
+                m.property_id,
+                m.measurement_id,
+                m.web_stream_default_uri or "",
+            )
+
+    console.print(table)
+    if not any_found and (measurement_id or domain):
+        console.print(
+            "\n[yellow]No account saw a match.[/yellow] Either the property belongs to an "
+            "account not yet granted `gtw auth login`, or the ID/domain is wrong."
+        )
 
 
 version_app = typer.Typer(no_args_is_help=False, help="Version inspection, promotion, and release management via verkit")

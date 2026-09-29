@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gtm-telemetry-wizard"
-version = "0.1.5"
+version = "0.1.6"
 description = "Standalone GTM container IaC compiler, Playwright live verifier, GA4 telemetry ingest warmer, and guided setup wizard."
 readme = "README.md"
 requires-python = ">=3.9"

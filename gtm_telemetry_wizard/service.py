@@ -7,9 +7,11 @@ import subprocess
 import urllib.error
 import urllib.request
 from copy import deepcopy
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
+from .auth import ALL_SCOPES, scopes_arg
 from .config import ConfigurationError, TelemetryConfig
 
 logger = logging.getLogger(__name__)
@@ -315,6 +317,60 @@ class GoogleApiClient:
             ) from error
 
 
+@dataclass
+class DiscoveredProperty:
+    """One GA4 web data stream visible to whichever identity made the call."""
+
+    account_name: str
+    account_display_name: str
+    property_id: str
+    property_display_name: str
+    measurement_id: str
+    web_stream_default_uri: Optional[str] = None
+
+
+def find_ga4_properties(
+    client: GoogleApiClient, measurement_id: Optional[str] = None
+) -> list[DiscoveredProperty]:
+    """Walk every GA4 account/property/web-data-stream visible to `client`'s
+    identity. If `measurement_id` is given, only the matching stream(s) are
+    returned; otherwise every discovered web stream is returned.
+
+    This is the single implementation behind both
+    TelemetryProvider._discover_property_id (one identity, exact match
+    required) and `gtw accounts discover` (many identities, exact match or
+    a full listing) - do not duplicate this walk elsewhere.
+    """
+    found: list[DiscoveredProperty] = []
+    summaries = client.get("https://analyticsadmin.googleapis.com/v1alpha/accountSummaries")
+    for summary in summaries.get("accountSummaries", []):
+        account_name = str(summary.get("account", ""))
+        account_display = str(summary.get("displayName", ""))
+        for prop in summary.get("propertySummaries", []):
+            prop_name = prop.get("property")
+            if not prop_name:
+                continue
+            streams = client.get(f"https://analyticsadmin.googleapis.com/v1alpha/{prop_name}/dataStreams")
+            for stream in streams.get("dataStreams", []):
+                web_data = stream.get("webStreamData") or {}
+                m_id = web_data.get("measurementId")
+                if not m_id:
+                    continue
+                if measurement_id and m_id != measurement_id:
+                    continue
+                found.append(
+                    DiscoveredProperty(
+                        account_name=account_name,
+                        account_display_name=account_display,
+                        property_id=str(prop_name).removeprefix("properties/"),
+                        property_display_name=str(prop.get("displayName", "")),
+                        measurement_id=str(m_id),
+                        web_stream_default_uri=web_data.get("defaultUri"),
+                    )
+                )
+    return found
+
+
 class TelemetryProvider:
     """Standalone TelemetryProvider for GTM container IaC, site verification, and GA4 telemetry warm-up."""
 
@@ -330,13 +386,34 @@ class TelemetryProvider:
         return account_id if account_id.startswith("accounts/") else f"accounts/{account_id}"
 
     @staticmethod
-    def _access_token(scopes: Optional[str] = None) -> str:
-        default_scopes = (
-            "https://www.googleapis.com/auth/analytics.readonly,"
-            "https://www.googleapis.com/auth/tagmanager.readonly,"
-            "https://www.googleapis.com/auth/cloud-platform"
-        )
-        req_scopes = scopes or default_scopes
+    def _access_token(scopes: Optional[str] = None, account: Optional[str] = None) -> str:
+        """Get an OAuth access token. `scopes` defaults to the canonical
+        ALL_SCOPES list in .auth (the one place that list is defined).
+
+        If `account` is given, mints a token for that *specific*
+        already-logged-in gcloud identity (`gcloud auth print-access-token
+        --account=...`) rather than the single global Application Default
+        Credentials - use this for multi-account flows (see `gtw accounts
+        discover`). Raises immediately if that account lacks the scopes,
+        pointing at `gtw auth login` rather than silently falling back to a
+        lower-privilege token the way the no-account path below does.
+        """
+        req_scopes = scopes or scopes_arg(ALL_SCOPES)
+
+        if account:
+            result = subprocess.run(
+                ["gcloud", "auth", "print-access-token", f"--account={account}", f"--scopes={req_scopes}"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip().splitlines()[0]
+            raise ProvisioningError(
+                f"No usable gcloud credentials for account {account}.",
+                f"Run `gtw auth login {account}` to grant the required scopes.",
+            )
+
         for cmd in (
             ["gcloud", "auth", "application-default", "print-access-token", f"--scopes={req_scopes}"],
             ["gcloud", "auth", "application-default", "print-access-token"],
@@ -358,9 +435,7 @@ class TelemetryProvider:
                 ) from error
         raise ProvisioningError(
             "No Google credentials available via gcloud.",
-            "Run `gcloud auth application-default login --scopes="
-            "https://www.googleapis.com/auth/analytics.readonly,"
-            "https://www.googleapis.com/auth/tagmanager.readonly`.",
+            f"Run `gcloud auth application-default login --scopes={req_scopes}`.",
         )
 
     def provision(self) -> Path:
@@ -643,18 +718,11 @@ class TelemetryProvider:
             return None
         try:
             client = GoogleApiClient(self._access_token())
-            summaries = client.get("https://analyticsadmin.googleapis.com/v1alpha/accountSummaries")
-            for summary in summaries.get("accountSummaries", []):
-                for prop in summary.get("propertySummaries", []):
-                    prop_name = prop.get("property")
-                    if prop_name:
-                        streams = client.get(f"https://analyticsadmin.googleapis.com/v1alpha/{prop_name}/dataStreams")
-                        for stream in streams.get("dataStreams", []):
-                            if stream.get("webStreamData", {}).get("measurementId") == m_id:
-                                return str(prop_name).removeprefix("properties/")
+            matches = find_ga4_properties(client, measurement_id=m_id)
+            return matches[0].property_id if matches else None
         except Exception as err:
             logger.debug("Property discovery note: %s", err)
-        return None
+            return None
 
     def query_analytics(
         self,
