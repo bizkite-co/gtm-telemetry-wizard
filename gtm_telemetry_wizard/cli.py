@@ -11,13 +11,7 @@ from typer import rich_utils
 from verkit import display_version_info, promote_version, release_version, tag_version
 from verkit.theme import DEFAULT as theme
 
-from .auth import (
-    ALL_SCOPES,
-    check_account_scopes,
-    ensure_account_scopes,
-    list_gcloud_accounts,
-    scopes_arg,
-)
+from .auth import ALL_SCOPES, READ_SCOPES, check_adc_scopes, ensure_adc_scopes, scopes_arg
 from .config import ConfigurationError, TelemetryConfig
 from .service import GoogleApiClient, ProvisioningError, TelemetryProvider, find_ga4_properties
 
@@ -348,7 +342,10 @@ def query_cmd(
     console.print(table)
 
 
-auth_app = typer.Typer(no_args_is_help=True, help="Manage gcloud OAuth scopes gtw needs, across multiple accounts.")
+auth_app = typer.Typer(
+    no_args_is_help=True,
+    help="Manage the Application Default Credentials identity/scopes gtw needs.",
+)
 app.add_typer(auth_app, name="auth")
 
 
@@ -360,71 +357,68 @@ def auth_scopes_cmd() -> None:
 
 
 @auth_app.command(name="status")
-def auth_status_cmd(
-    accounts: list[str] = typer.Argument(
-        None, help="Accounts to check (default: all `gcloud auth list` accounts)"
-    ),
-) -> None:
-    """Show which required scopes each account currently has. Read-only -
-    never prompts for login."""
-    target_accounts = accounts or list_gcloud_accounts()
-    if not target_accounts:
-        console.print("[yellow]No gcloud accounts found. Run `gcloud auth login` first.[/yellow]")
+def auth_status_cmd() -> None:
+    """Show which account the *current* Application Default Credentials
+    belong to, and whether it has the scopes gtw needs. Read-only - never
+    prompts for login.
+
+    ADC is a single, global identity (not one per account) - this reports
+    on whichever account was last set active via `gtw auth login`.
+    """
+    status = check_adc_scopes()
+    if status.error:
+        console.print(f"[red]{status.error}[/red]")
+        console.print("[dim]Run `gtw auth login <account>` to set one up.[/dim]")
         raise typer.Exit(code=1)
 
-    table = Table(
-        show_header=True,
-        box=theme.table_box,
-        header_style=theme.header_style,
-        padding=theme.table_padding,
-    )
-    table.add_column("Account", style="cyan")
-    table.add_column("Status", style="bold")
-    table.add_column("Missing scopes", style="yellow")
-
-    for account in target_accounts:
-        status = check_account_scopes(account)
-        if status.error:
-            table.add_row(account, "[red]Error[/red]", status.error)
-        elif status.ok:
-            table.add_row(account, "[green]OK[/green]", "")
-        else:
-            table.add_row(account, "[yellow]Missing scopes[/yellow]", "\n".join(status.missing))
-
-    console.print(table)
+    console.print(f"Active ADC identity: [cyan]{status.account or '(unknown)'}[/cyan]")
+    if status.ok:
+        console.print("[bold green]✓ Has all required scopes.[/bold green]")
+    else:
+        console.print(f"[bold yellow]Missing scopes:[/bold yellow] {', '.join(status.missing)}")
+        console.print(f"[dim]Fix: gtw auth login {status.account or '<account>'}[/dim]")
 
 
 @auth_app.command(name="login")
 def auth_login_cmd(
-    accounts: list[str] = typer.Argument(
-        ..., help="Account(s) to (re-)grant gtw's required scopes to"
+    account: Optional[str] = typer.Argument(
+        None,
+        help="Google account to make the active Application Default Credentials identity",
     ),
     force: bool = typer.Option(
-        False, "--force", help="Re-run login even if scopes already look sufficient"
+        False, "--force", help="Re-run login even if the current ADC already looks sufficient"
     ),
 ) -> None:
-    """Idempotently ensure each account has the scopes gtw needs.
+    """Idempotently ensure the Application Default Credentials identity is
+    `account` (if given) with all scopes gtw needs.
 
-    Only prompts (interactive OAuth consent in a browser) for accounts
-    actually missing a scope - safe to re-run any time, including right
+    Only prompts (interactive OAuth consent in a browser) when the current
+    ADC doesn't already match - safe to re-run any time, including right
     after adding a new scope to ALL_SCOPES in gtm_telemetry_wizard/auth.py.
     This is the one command that should ever need to change when a new
     Google API scope requirement shows up.
+
+    Application Default Credentials are a single global identity: running
+    this for a different account replaces whichever one was active before,
+    it does not add a second usable identity alongside it. If you need to
+    check multiple personal accounts (e.g. to find which one owns a GA4
+    property), run this once per account and `gtw accounts discover`
+    between each - see that command's help for why.
     """
-    for account in accounts:
-        console.print(f"[dim]Checking {account}...[/dim]")
-        status = ensure_account_scopes(account, force=force)
-        if status.ok:
-            console.print(f"[bold green]✓ {account}[/bold green] has all required scopes.")
-        else:
-            console.print(
-                f"[bold red]✗ {account}[/bold red] still missing: {', '.join(status.missing)}"
-            )
+    label = account or "(current gcloud default account)"
+    console.print(f"[dim]Checking ADC for {label}...[/dim]")
+    status = ensure_adc_scopes(account, force=force)
+    if status.ok:
+        console.print(f"[bold green]✓ {status.account}[/bold green] is now the active ADC identity with all required scopes.")
+    else:
+        console.print(
+            f"[bold red]✗ {status.account or label}[/bold red] still missing: {', '.join(status.missing)}"
+        )
 
 
 accounts_app = typer.Typer(
     no_args_is_help=True,
-    help="Discover which Google account/GA4 property owns a given measurement ID or domain.",
+    help="Discover which GA4 property the active identity can see, by measurement ID or domain.",
 )
 app.add_typer(accounts_app, name="accounts")
 
@@ -437,74 +431,97 @@ def accounts_discover_cmd(
     domain: Optional[str] = typer.Option(
         None, "--domain", "-d", help="Web stream default URI (domain) to search for"
     ),
-    accounts: list[str] = typer.Option(
-        None, "--account", help="Restrict to these gcloud accounts (default: all `gcloud auth list` accounts)"
+    service_accounts: list[str] = typer.Option(
+        None,
+        "--service-account",
+        help=(
+            "Check these service account emails instead of the current ADC identity. "
+            "Only service accounts (gcloud auth activate-service-account) support "
+            "independent, simultaneously-usable scoped tokens - personal Google "
+            "accounts do not (see `gtw auth login` for why), so this is not for "
+            "personal accounts."
+        ),
     ),
 ) -> None:
-    """Scan every (or specified) gcloud account for GA4 properties, reporting
-    which account can see which measurement ID/domain - a CLI-native,
+    """List every GA4 property/measurement ID the active identity can see
+    (or every one matching --measurement-id/--domain) - a CLI-native,
     scriptable, repeatable replacement for hunting through the GA4 web UI
-    across multiple logins to figure out "which account owns this?".
+    to figure out "which account owns this?".
 
-    Run `gtw auth login <account>` first for any account missing scopes -
-    this command will report "No access" for those rather than guessing.
+    For a personal Google account: run `gtw auth login <account>` first to
+    make it the active identity, then run this. To check several personal
+    accounts, repeat both steps per account - Application Default
+    Credentials are a single global identity, so there is no way to scan
+    several personal accounts in one non-interactive pass. Use
+    --service-account instead if you're working with service accounts,
+    which don't have that limitation.
     """
-    target_accounts = accounts or list_gcloud_accounts()
-    if not target_accounts:
-        console.print("[yellow]No gcloud accounts found. Run `gcloud auth login` first.[/yellow]")
-        raise typer.Exit(code=1)
-
     table = Table(
         show_header=True,
         box=theme.table_box,
         header_style=theme.header_style,
         padding=theme.table_padding,
     )
-    table.add_column("Account", style="cyan")
+    table.add_column("Identity", style="cyan")
     table.add_column("GA4 Account", style="dim")
     table.add_column("Property ID", style="bold green")
     table.add_column("Measurement ID", style="bold")
     table.add_column("Domain", style="dim")
 
-    any_found = False
-    for account in target_accounts:
-        try:
-            token = TelemetryProvider._access_token(account=account)
-        except (ConfigurationError, ProvisioningError) as error:
-            table.add_row(account, "[red]No access[/red]", "", "", str(error))
-            continue
-
+    def _add_rows(identity_label: str, token: str) -> bool:
         client = GoogleApiClient(token)
-        try:
-            matches = find_ga4_properties(client, measurement_id=measurement_id)
-        except Exception as exc:
-            table.add_row(account, "[red]Error[/red]", "", "", str(exc))
-            continue
-
+        matches = find_ga4_properties(client, measurement_id=measurement_id)
         if domain:
             matches = [
                 m for m in matches if m.web_stream_default_uri and domain in m.web_stream_default_uri
             ]
-
         if not matches:
-            table.add_row(account, "[dim]none visible[/dim]", "", "", "")
-            continue
-
+            table.add_row(identity_label, "[dim]none visible[/dim]", "", "", "")
+            return False
         for m in matches:
-            any_found = True
             table.add_row(
-                account,
+                identity_label,
                 m.account_display_name,
                 m.property_id,
                 m.measurement_id,
                 m.web_stream_default_uri or "",
             )
+        return True
+
+    any_found = False
+    if service_accounts:
+        for sa_email in service_accounts:
+            try:
+                token = TelemetryProvider._access_token(account=sa_email)
+            except (ConfigurationError, ProvisioningError) as error:
+                table.add_row(sa_email, "[red]No access[/red]", "", "", str(error))
+                continue
+            try:
+                any_found = _add_rows(sa_email, token) or any_found
+            except Exception as exc:
+                table.add_row(sa_email, "[red]Error[/red]", "", "", str(exc))
+    else:
+        # Don't gate on check_adc_scopes()/ALL_SCOPES here: that check
+        # includes openid/email, which are user-identity OAuth concepts a
+        # service-account token never carries even when fully capable -
+        # gating on it falsely reported a working service account as
+        # "missing scopes". Just attempt the real call and report whatever
+        # actually happens, the same way the --service-account branch above
+        # already (correctly) does.
+        adc_status = check_adc_scopes(required=READ_SCOPES)
+        identity_label = adc_status.account or "(active ADC identity)"
+        try:
+            token = TelemetryProvider._access_token()
+            any_found = _add_rows(identity_label, token)
+        except (ConfigurationError, ProvisioningError) as error:
+            table.add_row(identity_label, "[red]No access[/red]", "", "", str(error))
 
     console.print(table)
     if not any_found and (measurement_id or domain):
         console.print(
-            "\n[yellow]No account saw a match.[/yellow] Either the property belongs to an "
-            "account not yet granted `gtw auth login`, or the ID/domain is wrong."
+            "\n[yellow]No match under the checked identity.[/yellow] Either the property "
+            "belongs to an account you haven't run `gtw auth login` for yet, or the "
+            "ID/domain is wrong."
         )
 
 
